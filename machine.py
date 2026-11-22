@@ -19,7 +19,7 @@ from isa import Opcode, from_bytes, opcode_to_binary
 
 class DataPath:
     """Тракт данных (пассивный), включая: ввод/вывод, память и арифметику.
-    - data_memory -- однопортовая, поэтому либо читаем, либо пишем.
+    - memory -- однопортовая, поэтому либо читаем, либо пишем.
 
     - input/output -- токенизированная логика ввода-вывода. Не детализируется в
       рамках модели.
@@ -38,10 +38,10 @@ class DataPath:
     задача `ControlUnit`.
     """
 
-    data_memory_size = None
+    memory_size = None
     "Размер памяти данных."
 
-    data_memory = None
+    memory = None
     "Память данных. Инициализируется нулевыми значениями."
 
     data_address = None
@@ -56,10 +56,11 @@ class DataPath:
     output_buffer = None
     "Буфер выходных данных."
 
-    def __init__(self, data_memory_size, input_buffer):
-        assert data_memory_size > 0, "Data_memory size should be non-zero"
-        self.data_memory_size = data_memory_size
-        self.data_memory = [0] * data_memory_size
+    def __init__(self, memory_size, input_buffer, binary_code):
+        assert memory_size > 0, "memory size should be non-zero"
+        self.memory_size = memory_size
+        self.memory = bytearray(memory_size)
+        self.memory[:len(binary_code)] = binary_code
         self.data_address = 0
         self.acc = 0
         self.input_buffer = input_buffer
@@ -82,13 +83,13 @@ class DataPath:
         elif sel == Opcode.RIGHT.value:
             self.data_address += 1
 
-        assert 0 <= self.data_address < self.data_memory_size, "out of memory: {}".format(self.data_address)
+        assert 0 <= self.data_address < self.memory_size, "out of memory: {}".format(self.data_address)
 
     def signal_latch_acc(self):
         """Защёлкнуть слово из памяти (`oe` от Output Enable) и защёлкнуть его в
         аккумулятор. Сигнал `oe` выставляется неявно `ControlUnit`-ом.
         """
-        self.acc = self.data_memory[self.data_address]
+        self.acc = self.memory[self.data_address]
 
     def signal_wr(self, sel):
         """wr (от WRite), сохранить в память.
@@ -124,20 +125,20 @@ class DataPath:
         }, "internal error, incorrect selector: {}".format(sel)
 
         if sel == Opcode.INC.value:
-            self.data_memory[self.data_address] = self.acc + 1
-            if self.data_memory[self.data_address] == 128:
-                self.data_memory[self.data_address] = -128
+            self.memory[self.data_address] = self.acc + 1
+            if self.memory[self.data_address] == 128:
+                self.memory[self.data_address] = -128
         elif sel == Opcode.DEC.value:
-            self.data_memory[self.data_address] = self.acc - 1
-            if self.data_memory[self.data_address] == -129:
-                self.data_memory[self.data_address] = 127
+            self.memory[self.data_address] = self.acc - 1
+            if self.memory[self.data_address] == -129:
+                self.memory[self.data_address] = 127
         elif sel == Opcode.INPUT.value:
             if len(self.input_buffer) == 0:
                 raise EOFError()
             symbol = self.input_buffer.pop(0)
             symbol_code = ord(symbol)
             assert -128 <= symbol_code <= 127, "input token is out of bound: {}".format(symbol_code)
-            self.data_memory[self.data_address] = symbol_code
+            self.memory[self.data_address] = symbol_code
             logging.debug("input: %s", repr(symbol))
 
     def signal_output(self):
@@ -291,7 +292,7 @@ class ControlUnit:
             self.program_counter,
             self.step,
             self.data_path.data_address,
-            self.data_path.data_memory[self.data_path.data_address],
+            self.data_path.memory[self.data_path.data_address],
             self.data_path.acc,
         )
 
@@ -307,7 +308,7 @@ class ControlUnit:
         return "{} \t{} [{}]".format(state_repr, instr_repr, instr_hex)
 
 
-def simulation(code, input_tokens, data_memory_size, limit):
+def simulation(binary_code, input_tokens, memory_size, limit):
     """Подготовка модели и запуск симуляции процессора.
 
     Длительность моделирования ограничена:
@@ -319,8 +320,8 @@ def simulation(code, input_tokens, data_memory_size, limit):
 
     - инструкцией `Halt`, через исключение `StopIteration`.
     """
-    data_path = DataPath(data_memory_size, input_tokens)
-    control_unit = ControlUnit(code, data_path)
+    data_path = DataPath(memory_size, input_tokens, binary_code)
+    control_unit = ControlUnit(binary_code, data_path)
 
     logging.debug("%s", control_unit)
     try:
@@ -344,7 +345,6 @@ def main(code_file, input_file):
     """
     with open(code_file, "rb") as file:
         binary_code = file.read()
-    code = from_bytes(binary_code)
 
     with open(input_file, encoding="utf-8") as file:
         input_text = file.read()
@@ -353,9 +353,9 @@ def main(code_file, input_file):
             input_token.append(char)
 
     output, ticks = simulation(
-        code,
+        binary_code,
         input_tokens=input_token,
-        data_memory_size=100,
+        memory_size=0x10000,
         limit=2000,
     )
 
