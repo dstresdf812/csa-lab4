@@ -13,9 +13,18 @@
 
 import logging
 import sys
+from dis import get_instructions
+from enum import Enum
 
 from isa import Opcode, from_bytes, opcode_to_binary
 
+class State(Enum):
+    FETCH = "FETCH"
+    T1 = "T1"
+    T2 = "T2"
+    T3 = "T3"
+    STOP = "STOP"
+    FAULT = "FAULT"
 
 class DataPath:
     """Тракт данных (пассивный), включая: ввод/вывод, память и арифметику.
@@ -165,9 +174,6 @@ class ControlUnit:
 
     """
 
-    program = None
-    "Память команд."
-
     program_counter = None
     "Счётчик команд. Инициализируется нулём."
 
@@ -177,13 +183,17 @@ class ControlUnit:
     _tick = None
     "Текущее модельное время процессора (в тактах). Инициализируется нулём."
 
-    def __init__(self, program, data_path):
-        self.program = program
-        self.program_counter = 0
+    IR = None
+    def __init__(self, data_path):
+        self.program_counter = 4
         self.data_path = data_path
         self._tick = 0
-        self.step = 0
+        self.state = State.FETCH
 
+    def get_instruction(self):
+        instr = from_bytes(self.data_path.memory[self.program_counter:self.program_counter+4])
+        self.program_counter += 4
+        return instr[0]
     def tick(self):
         """Продвинуть модельное время процессора вперёд на один такт."""
         self._tick += 1
@@ -201,7 +211,7 @@ class ControlUnit:
         if sel_next:
             self.program_counter += 1
         else:
-            instr = self.program[self.program_counter]
+            instr = self.get_instruction()
             assert "arg" in instr, "internal error"
             self.program_counter = instr["arg"]
 
@@ -223,67 +233,89 @@ class ControlUnit:
         Обработка функций управления потоком исполнения вынесена в
         `decode_and_execute_control_flow_instruction`.
         """
-        instr = self.program[self.program_counter]
+        if self.state == State.FETCH:
+            instr = self.data_path.memory[self.program_counter:self.program_counter + 4]
+            self.program_counter += 4
+            self.IR = instr
+            self.next_state()
+            self.tick()
+            return
+        instr = from_bytes(self.IR)[0]
         opcode = instr["opcode"]
-
         if opcode is Opcode.HALT:
-            raise StopIteration()
+            self.state = State.STOP
+            return
 
         if opcode is Opcode.JMP:
             addr = instr["arg"]
             self.program_counter = addr
-            self.step = 0
             self.tick()
             return
 
         if opcode is Opcode.JZ:
-            if self.step == 0:
+            if self.state == State.T1:
                 addr = instr["arg"]
                 self.data_path.signal_latch_acc()
-                self.step = 1
+                self.next_state()
                 self.tick()
                 return
-            if self.step == 1:
+            if self.state == State.T2:
                 if self.data_path.zero():
                     self.signal_latch_program_counter(sel_next=False)
                 else:
                     self.signal_latch_program_counter(sel_next=True)
-                self.step = 0
+                self.next_state()
                 self.tick()
                 return
 
-        if opcode in {Opcode.RIGHT, Opcode.LEFT}:
-            self.data_path.signal_latch_data_addr(opcode.value)
-            self.signal_latch_program_counter(sel_next=True)
-            self.step = 0
-            self.tick()
+        # if opcode in {Opcode.RIGHT, Opcode.LEFT}:
+        #     self.data_path.signal_latch_data_addr(opcode.value)
+        #     self.signal_latch_program_counter(sel_next=True)
+        #     self.state.next()
+        #     self.tick()
+        #     return
+        #
+        # if opcode in {Opcode.INC, Opcode.DEC, Opcode.INPUT}:
+        #     if self.state == State.T1:
+        #         self.data_path.signal_latch_acc()
+        #         self.state.next()
+        #         self.tick()
+        #         return
+        #     if self.state == State.T2:
+        #         self.data_path.signal_wr(opcode.value)
+        #         self.signal_latch_program_counter(sel_next=True)
+        #         self.state.next()
+        #         self.tick()
+        #         return
+        #
+        # if opcode is Opcode.PRINT:
+        #     if self.state == State.T1:
+        #         self.data_path.signal_latch_acc()
+        #         self.step = 1
+        #         self.tick()
+        #         return
+        #     if self.state == State.T2:
+        #         self.data_path.signal_output()
+        #         self.signal_latch_program_counter(sel_next=True)
+        #         self.state.next()
+        #         self.tick()
+        #         return
+
+
+
+    def next_state(self):
+        if self.state == State.FETCH:
+            self.state = State.T1
             return
-
-        if opcode in {Opcode.INC, Opcode.DEC, Opcode.INPUT}:
-            if self.step == 0:
-                self.data_path.signal_latch_acc()
-                self.step = 1
-                self.tick()
-                return
-            if self.step == 1:
-                self.data_path.signal_wr(opcode.value)
-                self.signal_latch_program_counter(sel_next=True)
-                self.step = 0
-                self.tick()
-                return
-
-        if opcode is Opcode.PRINT:
-            if self.step == 0:
-                self.data_path.signal_latch_acc()
-                self.step = 1
-                self.tick()
-                return
-            if self.step == 1:
-                self.data_path.signal_output()
-                self.signal_latch_program_counter(sel_next=True)
-                self.step = 0
-                self.tick()
-                return
+        elif self.state == State.T1:
+            self.state = State.T2
+            return
+        elif self.state == State.T2:
+            self.state = State.T3
+            return
+        elif self.state == State.T3:
+            self.state = State.FETCH
+            return
 
     def __repr__(self):
         """Вернуть строковое представление состояния процессора."""
@@ -296,7 +328,7 @@ class ControlUnit:
             self.data_path.acc,
         )
 
-        instr = self.program[self.program_counter]
+        instr = self.data_path.memory[self.program_counter]
         opcode = instr["opcode"]
         instr_repr = str(opcode)
 
@@ -321,7 +353,7 @@ def simulation(binary_code, input_tokens, memory_size, limit):
     - инструкцией `Halt`, через исключение `StopIteration`.
     """
     data_path = DataPath(memory_size, input_tokens, binary_code)
-    control_unit = ControlUnit(binary_code, data_path)
+    control_unit = ControlUnit(data_path)
 
     logging.debug("%s", control_unit)
     try:
