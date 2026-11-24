@@ -41,14 +41,13 @@ class DataPath:
     output_buffer = None
     receive_ready = False
     receive_byte = None
-    def __init__(self, memory_size, input_buffer, binary_code):
+    def __init__(self, memory_size, binary_code):
         assert memory_size > 0, "memory size should be non-zero"
         self.memory_size = memory_size
         self.memory = bytearray(memory_size)
         self.memory[:len(binary_code)] = binary_code
         self.data_address = 0
         self.sp = 0x8000
-        self.input_buffer = input_buffer
         self.output_buffer = []
 
     def read_bytes(self, size, addr):
@@ -60,6 +59,10 @@ class DataPath:
     def write(self, size, addr, data):
         data_bytes = (data & 0xFFFFFFFF).to_bytes(4, "little")
         self.memory[addr:addr + size] = data_bytes[:size]
+
+    def receive_input(self, byte):
+        self.receive_ready = True
+        self.receive_byte = byte
 class ControlUnit:
     program_counter = None
 
@@ -69,6 +72,8 @@ class ControlUnit:
 
     IR = None
 
+    is_int = False
+    SPC = 0
     def __init__(self, data_path):
         self.program_counter = 4
         self.data_path = data_path
@@ -85,6 +90,12 @@ class ControlUnit:
         if self.state == State.STOP or self.state == State.FAULT:
             raise StopIteration()
         if self.state == State.FETCH:
+            if self.is_int == 0 and self.data_path.receive_ready:
+                self.SPC = self.program_counter
+                self.is_int = True
+                self.program_counter = self.data_path.read(4,0)
+                self.tick()
+                return
             instr = self.data_path.read_bytes(4,self.program_counter)
             self.program_counter += 4
             self.IR = instr
@@ -428,6 +439,16 @@ class ControlUnit:
                 self.tick()
                 return
 
+        if opcode is Opcode.IRET:
+            if self.state == State.T1:
+                self.program_counter = self.SPC
+                self.is_int = False
+                self.state = State.FETCH
+                self.tick()
+                return
+
+
+
     def next_state(self):
         if self.state == State.FETCH:
             self.state = State.T1
@@ -480,12 +501,15 @@ def simulation(binary_code, input_tokens, memory_size, limit):
 
     - инструкцией `Halt`, через исключение `StopIteration`.
     """
-    data_path = DataPath(memory_size, input_tokens, binary_code)
+    data_path = DataPath(memory_size, binary_code)
     control_unit = ControlUnit(data_path)
 
     logging.debug("%s", control_unit)
     try:
         while control_unit._tick < limit:
+            if input_tokens and control_unit._tick == input_tokens[0][0]:
+                data_path.receive_input(ord(input_tokens[0][1]))
+                input_tokens.pop(0)
             control_unit.process_next_tick()
             logging.debug("%s", control_unit)
     except EOFError:
