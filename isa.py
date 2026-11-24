@@ -216,7 +216,7 @@ def from_bytes(binary_code):
         instr = {"index": i // 4, "opcode": opcode}
 
         # Добавляем адрес перехода только для инструкций перехода
-        if opcode in (Opcode.JMP, Opcode.JZ, Opcode.PUSHI, Opcode.LEA, Opcode.RET, Opcode.CALL, Opcode.IN, Opcode.OUT):
+        if opcode in (Opcode.JMP, Opcode.JZ, Opcode.PUSHI, Opcode.LEA, Opcode.RET, Opcode.CALL):
             if opcode in (Opcode.PUSHI, Opcode.LEA, Opcode.RET) and (arg & 0x800000):
                 arg -= 0x1000000
             instr["arg"] = arg

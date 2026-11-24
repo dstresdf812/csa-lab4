@@ -13,7 +13,6 @@
 
 import logging
 import sys
-from dis import get_instructions
 from enum import Enum
 
 from isa import Opcode, from_bytes, opcode_to_binary
@@ -27,212 +26,55 @@ class State(Enum):
     FAULT = "FAULT"
 
 class DataPath:
-    """Тракт данных (пассивный), включая: ввод/вывод, память и арифметику.
-    - memory -- однопортовая, поэтому либо читаем, либо пишем.
-
-    - input/output -- токенизированная логика ввода-вывода. Не детализируется в
-      рамках модели.
-
-    - input -- чтение может вызвать остановку процесса моделирования, если буфер
-      входных значений закончился.
-
-    Реализованные методы соответствуют сигналам защёлкивания значений:
-
-    - `signal_latch_data_addr` -- защёлкивание адреса в памяти данных;
-    - `signal_latch_acc` -- защёлкивание аккумулятора;
-    - `signal_wr` -- запись в память данных;
-    - `signal_output` -- вывод в порт.
-
-    Сигнал "исполняется" за один такт. Корректность использования сигналов --
-    задача `ControlUnit`.
-    """
-
     memory_size = None
-    "Размер памяти данных."
 
     memory = None
-    "Память данных. Инициализируется нулевыми значениями."
 
     data_address = None
-    "Адрес в памяти данных. Инициализируется нулём."
 
-    acc = None
-    "Аккумулятор. Инициализируется нулём."
+    sp = None
+    a = None
+    b = None
+    t = None
 
     input_buffer = None
-    "Буфер входных данных. Инициализируется входными данными конструктора."
-
     output_buffer = None
-    "Буфер выходных данных."
-
+    receive_ready = False
+    receive_byte = None
     def __init__(self, memory_size, input_buffer, binary_code):
         assert memory_size > 0, "memory size should be non-zero"
         self.memory_size = memory_size
         self.memory = bytearray(memory_size)
         self.memory[:len(binary_code)] = binary_code
         self.data_address = 0
-        self.acc = 0
+        self.sp = 0x8000
         self.input_buffer = input_buffer
         self.output_buffer = []
 
-    def signal_latch_data_addr(self, sel):
-        """Защёлкнуть адрес в памяти данных. Защёлкивание осуществляется на
-        основе селектора `sel` в котором указывается `Opcode`:
-
-        - `Opcode.LEFT.value` -- сдвиг влево;
-
-        - `Opcode.RIGHT.value` -- сдвиг вправо.
-
-        При выходе за границы памяти данных процесс моделирования останавливается.
-        """
-        assert sel in {Opcode.LEFT.value, Opcode.RIGHT.value}, "internal error, incorrect selector: {}".format(sel)
-
-        if sel == Opcode.LEFT.value:
-            self.data_address -= 1
-        elif sel == Opcode.RIGHT.value:
-            self.data_address += 1
-
-        assert 0 <= self.data_address < self.memory_size, "out of memory: {}".format(self.data_address)
-
-    def signal_latch_acc(self):
-        """Защёлкнуть слово из памяти (`oe` от Output Enable) и защёлкнуть его в
-        аккумулятор. Сигнал `oe` выставляется неявно `ControlUnit`-ом.
-        """
-        self.acc = self.memory[self.data_address]
-
-    def signal_wr(self, sel):
-        """wr (от WRite), сохранить в память.
-
-        Запись в память осуществляется на основе селектора `sel` в котором указывается `Opcode`:
-
-        - `Opcode.INC.value` -- инкремент аккумулятора;
-
-        - `Opcode.DEC.value` -- декремент аккумулятора;
-
-        - `Opcode.INPUT.value` -- ввод из буфера входных данных. При исчерпании
-          буфера -- выбрасывается исключение `EOFError`.
-
-        В примере ниже имитируется переполнение ячейки при инкременте. Данный
-        текст является doctest-ом, корректность которого проверяется во время
-        загрузки модуля или командой: `python3 -m doctest -v machine.py`
-
-        >>> dp = DataPath(10, [chr(127)])
-        >>> dp.signal_wr(Opcode.INPUT.value)
-        >>> dp.signal_latch_acc()
-        >>> dp.acc
-        127
-        >>> dp.signal_wr(Opcode.INC.value)
-        >>> dp.signal_latch_acc()
-        >>> dp.acc
-        -128
-
-        """
-        assert sel in {
-            Opcode.INC.value,
-            Opcode.DEC.value,
-            Opcode.INPUT.value,
-        }, "internal error, incorrect selector: {}".format(sel)
-
-        if sel == Opcode.INC.value:
-            self.memory[self.data_address] = self.acc + 1
-            if self.memory[self.data_address] == 128:
-                self.memory[self.data_address] = -128
-        elif sel == Opcode.DEC.value:
-            self.memory[self.data_address] = self.acc - 1
-            if self.memory[self.data_address] == -129:
-                self.memory[self.data_address] = 127
-        elif sel == Opcode.INPUT.value:
-            if len(self.input_buffer) == 0:
-                raise EOFError()
-            symbol = self.input_buffer.pop(0)
-            symbol_code = ord(symbol)
-            assert -128 <= symbol_code <= 127, "input token is out of bound: {}".format(symbol_code)
-            self.memory[self.data_address] = symbol_code
-            logging.debug("input: %s", repr(symbol))
-
-    def signal_output(self):
-        """Вывести значение аккумулятора в порт вывода.
-
-        Вывод осуществляется путём конвертации значения аккумулятора в символ по
-        ASCII-таблице.
-        """
-        symbol = chr(self.acc)
-        logging.debug("output: %s << %s", repr("".join(self.output_buffer)), repr(symbol))
-        self.output_buffer.append(symbol)
-
-    def zero(self):
-        """Флаг нуля. Необходим для условных переходов."""
-        return self.acc == 0
-
-
 class ControlUnit:
-    """Блок управления процессора. Выполняет декодирование инструкций и
-    управляет состоянием модели процессора, включая обработку данных (DataPath).
-
-    Согласно варианту, любая инструкция может быть закодирована в одно слово.
-    Следовательно, индекс памяти команд эквивалентен номеру инструкции.
-
-    """
-
     program_counter = None
-    "Счётчик команд. Инициализируется нулём."
 
     data_path = None
-    "Блок обработки данных."
 
     _tick = None
-    "Текущее модельное время процессора (в тактах). Инициализируется нулём."
 
     IR = None
+
     def __init__(self, data_path):
         self.program_counter = 4
         self.data_path = data_path
         self._tick = 0
         self.state = State.FETCH
 
-    def get_instruction(self):
-        instr = from_bytes(self.data_path.memory[self.program_counter:self.program_counter+4])
-        self.program_counter += 4
-        return instr[0]
     def tick(self):
-        """Продвинуть модельное время процессора вперёд на один такт."""
         self._tick += 1
 
     def current_tick(self):
-        """Текущее модельное время процессора (в тактах)."""
         return self._tick
 
-    def signal_latch_program_counter(self, sel_next):
-        """Защёлкнуть новое значение счётчика команд.
-
-        Если `sel_next` равен `True`, то счётчик будет увеличен на единицу,
-        иначе -- будет установлен в значение аргумента текущей инструкции.
-        """
-        if sel_next:
-            self.program_counter += 1
-        else:
-            instr = self.get_instruction()
-            assert "arg" in instr, "internal error"
-            self.program_counter = instr["arg"]
-
-    def process_next_tick(self):  # noqa: C901 # код имеет хорошо структурирован, по этому не проблема.
-        """Основной цикл процессора. Декодирует и выполняет инструкцию.
-
-        Обработка инструкции:
-
-        1. Проверить `Opcode`.
-
-        2. Вызвать методы, имитирующие необходимые управляющие сигналы.
-
-        3. Продвинуть модельное время вперёд на один такт (`tick`).
-
-        4. (если необходимо) повторить шаги 2-3.
-
-        5. Перейти к следующей инструкции.
-
-        Обработка функций управления потоком исполнения вынесена в
-        `decode_and_execute_control_flow_instruction`.
-        """
+    def process_next_tick(self):
+        if self.state == State.STOP or self.state == State.FAULT:
+            raise StopIteration()
         if self.state == State.FETCH:
             instr = self.data_path.memory[self.program_counter:self.program_counter + 4]
             self.program_counter += 4
@@ -244,64 +86,334 @@ class ControlUnit:
         opcode = instr["opcode"]
         if opcode is Opcode.HALT:
             self.state = State.STOP
-            return
-
-        if opcode is Opcode.JMP:
-            addr = instr["arg"]
-            self.program_counter = addr
             self.tick()
             return
 
-        if opcode is Opcode.JZ:
+        if opcode is Opcode.PUSHI:
             if self.state == State.T1:
-                addr = instr["arg"]
-                self.data_path.signal_latch_acc()
+                arg = instr["arg"]
+                self.data_path.memory[self.data_path.sp:self.data_path.sp+4] = arg.to_bytes(4, byteorder="little", signed=True)
+                self.data_path.sp += 4
+                self.state = State.FETCH
+                self.tick()
+                return
+            else:
+                raise ValueError("illegal state")
+
+        if opcode is Opcode.DROP:
+            if self.state == State.T1:
+                self.data_path.sp -= 4
+                self.state = State.FETCH
+                self.tick()
+                return
+            else:
+                raise ValueError("illegal state")
+
+        if opcode is Opcode.LEA:
+            if self.state == State.T1:
+                arg = instr["arg"]
+                off = self.data_path.sp + arg
+                self.data_path.memory[self.data_path.sp:self.data_path.sp+4] = off.to_bytes(4, byteorder="little", signed=False)
+                self.data_path.sp += 4
+                self.state = State.FETCH
+                self.tick()
+                return
+            else:
+                raise ValueError("illegal state")
+
+        if opcode is Opcode.LDW:
+            if self.state == State.T1:
+                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
+                                                  byteorder="little", signed=False)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T2:
-                if self.data_path.zero():
-                    self.signal_latch_program_counter(sel_next=False)
-                else:
-                    self.signal_latch_program_counter(sel_next=True)
+                self.data_path.t = self.data_path.memory[self.data_path.a:self.data_path.a+4]
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T3:
+                self.data_path.memory[self.data_path.sp-4:self.data_path.sp] = self.data_path.t
                 self.next_state()
                 self.tick()
                 return
 
-        # if opcode in {Opcode.RIGHT, Opcode.LEFT}:
-        #     self.data_path.signal_latch_data_addr(opcode.value)
-        #     self.signal_latch_program_counter(sel_next=True)
-        #     self.state.next()
-        #     self.tick()
-        #     return
-        #
-        # if opcode in {Opcode.INC, Opcode.DEC, Opcode.INPUT}:
-        #     if self.state == State.T1:
-        #         self.data_path.signal_latch_acc()
-        #         self.state.next()
-        #         self.tick()
-        #         return
-        #     if self.state == State.T2:
-        #         self.data_path.signal_wr(opcode.value)
-        #         self.signal_latch_program_counter(sel_next=True)
-        #         self.state.next()
-        #         self.tick()
-        #         return
-        #
-        # if opcode is Opcode.PRINT:
-        #     if self.state == State.T1:
-        #         self.data_path.signal_latch_acc()
-        #         self.step = 1
-        #         self.tick()
-        #         return
-        #     if self.state == State.T2:
-        #         self.data_path.signal_output()
-        #         self.signal_latch_program_counter(sel_next=True)
-        #         self.state.next()
-        #         self.tick()
-        #         return
+        if opcode is Opcode.LDB:
+            if self.state == State.T1:
+                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
+                                                  byteorder="little", signed=False)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T2:
+                self.data_path.t = self.data_path.memory[self.data_path.a]
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T3:
+                self.data_path.memory[self.data_path.sp - 4:self.data_path.sp] = self.data_path.t.to_bytes(4, "little")
+                self.next_state()
+                self.tick()
+                return
 
+        if opcode is Opcode.STW:
+            if self.state == State.T1:
+                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
+                                                  byteorder="little", signed=False)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T2:
+                self.data_path.t = self.data_path.memory[self.data_path.sp - 8:self.data_path.sp-4]
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T3:
+                self.data_path.memory[self.data_path.a:self.data_path.a+4] = self.data_path.t
+                self.data_path.sp -= 4
+                self.next_state()
+                self.tick()
+                return
 
+        if opcode is Opcode.STB:
+            if self.state == State.T1:
+                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
+                                                  byteorder="little", signed=False)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T2:
+                self.data_path.t = self.data_path.memory[self.data_path.sp-8]
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T3:
+                self.data_path.memory[self.data_path.a] = self.data_path.t
+                self.data_path.sp -= 4
+                self.next_state()
+                self.tick()
+                return
+
+        if opcode is Opcode.ADD:
+            if self.state == State.T1:
+                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp-4:self.data_path.sp], byteorder="little", signed=True)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T2:
+                self.data_path.a =int.from_bytes(self.data_path.memory[self.data_path.sp-8:self.data_path.sp-4], byteorder="little", signed=True)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T3:
+                self.data_path.sp-=4
+                self.data_path.memory[self.data_path.sp-4:self.data_path.sp] = ((self.data_path.a + self.data_path.b) & 0xFFFFFFFF).to_bytes(4, "little")
+                self.next_state()
+                self.tick()
+                return
+
+        if opcode is Opcode.SUB:
+            if self.state == State.T1:
+                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp-4:self.data_path.sp], byteorder="little", signed=True)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T2:
+                self.data_path.a =int.from_bytes(self.data_path.memory[self.data_path.sp-8:self.data_path.sp-4], byteorder="little", signed=True)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T3:
+                self.data_path.sp-=4
+                self.data_path.memory[self.data_path.sp-4:self.data_path.sp] = ((self.data_path.a - self.data_path.b) & 0xFFFFFFFF).to_bytes(4, "little")
+                self.next_state()
+                self.tick()
+                return
+
+        if opcode is Opcode.MUL:
+            if self.state == State.T1:
+                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
+                                                  byteorder="little", signed=True)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T2:
+                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 8:self.data_path.sp - 4],
+                                                  byteorder="little", signed=True)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T3:
+                self.data_path.sp-=4
+                self.data_path.memory[self.data_path.sp-4:self.data_path.sp] = ((self.data_path.a * self.data_path.b) & 0xFFFFFFFF).to_bytes(4, "little")
+                self.next_state()
+                self.tick()
+                return
+
+        if opcode is Opcode.DIV:
+            if self.state == State.T1:
+                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
+                                                  byteorder="little", signed=True)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T2:
+                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 8:self.data_path.sp - 4],
+                                                  byteorder="little", signed=True)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T3:
+                self.data_path.sp-=4
+                result = int(self.data_path.a / self.data_path.b) if self.data_path.b != 0 else 0
+                self.data_path.memory[self.data_path.sp - 4:self.data_path.sp] = (result & 0xFFFFFFFF).to_bytes(4, "little")
+                self.next_state()
+                self.tick()
+                return
+
+        if opcode is Opcode.EQ:
+            if self.state == State.T1:
+                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
+                                                  byteorder="little", signed=True)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T2:
+                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 8:self.data_path.sp - 4],
+                                                  byteorder="little", signed=True)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T3:
+                self.data_path.sp-=4
+                self.data_path.memory[self.data_path.sp - 4:self.data_path.sp] = (self.data_path.a == self.data_path.b).to_bytes(4, "little")
+                self.next_state()
+                self.tick()
+                return
+
+        if opcode is Opcode.SLT:
+            if self.state == State.T1:
+                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
+                                                  byteorder="little", signed=True)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T2:
+                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 8:self.data_path.sp - 4],
+                                                  byteorder="little", signed=True)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T3:
+                self.data_path.sp-=4
+                self.data_path.memory[self.data_path.sp - 4:self.data_path.sp] = (self.data_path.a < self.data_path.b).to_bytes(4, "little")
+                self.next_state()
+                self.tick()
+                return
+
+        if opcode is Opcode.ULT:
+            if self.state == State.T1:
+                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
+                                                  byteorder="little", signed=False)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T2:
+                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 8:self.data_path.sp - 4],
+                                                  byteorder="little", signed=False)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T3:
+                self.data_path.sp-=4
+                self.data_path.memory[self.data_path.sp - 4:self.data_path.sp] = (self.data_path.a < self.data_path.b).to_bytes(4, "little")
+                self.next_state()
+                self.tick()
+                return
+
+        if opcode is Opcode.JMP:
+            if self.state == State.T1:
+                arg = instr["arg"]
+                self.program_counter = arg
+                self.state = State.FETCH
+                self.tick()
+                return
+
+        if opcode is Opcode.JZ:
+            if self.state == State.T1:
+                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp], byteorder="little", signed=False)
+                self.data_path.sp -= 4
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T2:
+                if self.data_path.a == 0:
+                    arg = instr["arg"]
+                    self.program_counter = arg
+                self.state = State.FETCH
+                self.tick()
+                return
+
+        if opcode is Opcode.CALL:
+            if self.state == State.T1:
+                arg = instr["arg"]
+                self.data_path.memory[self.data_path.sp:self.data_path.sp+4] = self.program_counter.to_bytes(4, "little")
+                self.data_path.sp += 4
+                self.program_counter = arg
+                self.state = State.FETCH
+                self.tick()
+                return
+
+        if opcode is Opcode.RET:
+            if self.state == State.T1:
+                self.data_path.t = self.data_path.memory[self.data_path.sp-4:self.data_path.sp]
+                self.data_path.sp -= 4
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T2:
+                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp], byteorder="little", signed=False)
+                arg = instr["arg"]
+                self.data_path.sp += arg
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T3:
+                self.data_path.memory[self.data_path.sp-4:self.data_path.sp] = self.data_path.t
+                self.program_counter = self.data_path.b
+                self.next_state()
+                self.tick()
+                return
+
+        if opcode is Opcode.IN:
+            if self.state == State.T1:
+                if self.data_path.receive_ready == 1:
+                    self.data_path.t = self.data_path.receive_byte
+                    self.data_path.receive_ready = 0
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T2:
+                self.data_path.memory[self.data_path.sp:self.data_path.sp+4] = self.data_path.t.to_bytes(4, "little")
+                self.data_path.sp += 4
+                self.state = State.FETCH
+                self.tick()
+                return
+
+        if opcode is Opcode.OUT:
+            if self.state == State.T1:
+                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
+                                                  byteorder="little", signed=False)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T2:
+                byte = self.data_path.a & 0xFF
+                self.data_path.output_buffer.append(byte)
+                self.state = State.FETCH
+                self.tick()
+                return
 
     def next_state(self):
         if self.state == State.FETCH:
@@ -319,25 +431,28 @@ class ControlUnit:
 
     def __repr__(self):
         """Вернуть строковое представление состояния процессора."""
-        state_repr = "TICK: {:3} PC: {:3}/{} ADDR: {:3} MEM_OUT: {} ACC: {}".format(
+        state_repr = "TICK: {:3} PC: {:3}/ ADDR: {:3} MEM_OUT: {} SP: {} STATE: {}".format(
             self._tick,
             self.program_counter,
-            self.step,
             self.data_path.data_address,
             self.data_path.memory[self.data_path.data_address],
-            self.data_path.acc,
+            self.data_path.sp,
+            self.state
         )
 
-        instr = self.data_path.memory[self.program_counter]
+        if self.IR is None: return state_repr
+        instr = from_bytes(self.IR)[0]
         opcode = instr["opcode"]
         instr_repr = str(opcode)
 
         if "arg" in instr:
             instr_repr += " {}".format(instr["arg"])
 
-        instr_hex = f"{opcode_to_binary[opcode] << 28 | (instr.get('arg', 0) & 0x0FFFFFFF):08X}"
-
-        return "{} \t{} [{}]".format(state_repr, instr_repr, instr_hex)
+        instr_hex = f"{opcode_to_binary[opcode] << 24 | (instr.get('arg', 0) & 0x00FFFFFF):08X}"
+        if self.state == State.FETCH or self.state == State.STOP or self.state == State.FAULT:
+            instr_repr = ""
+            instr_hex = ""
+        return "{} \t{:<19} [{}]".format(state_repr, instr_repr, instr_hex)
 
 
 def simulation(binary_code, input_tokens, memory_size, limit):
@@ -375,6 +490,7 @@ def main(code_file, input_file):
     """Функция запуска модели процессора. Параметры -- имена файлов с машинным
     кодом и с входными данными для симуляции.
     """
+    logging.basicConfig(level=logging.DEBUG, format="%(message)s")
     with open(code_file, "rb") as file:
         binary_code = file.read()
 
@@ -393,7 +509,6 @@ def main(code_file, input_file):
 
     print("".join(output))
     print("ticks:", ticks)
-
 
 if __name__ == "__main__":
     logging.getLogger().setLevel(logging.DEBUG)
