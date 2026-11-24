@@ -51,6 +51,15 @@ class DataPath:
         self.input_buffer = input_buffer
         self.output_buffer = []
 
+    def read_bytes(self, size, addr):
+        return self.memory[addr:addr + size]
+
+    def read(self, size, addr, signed=False):
+        return int.from_bytes(self.read_bytes(size,addr), byteorder="little", signed=signed)
+
+    def write(self, size, addr, data):
+        data_bytes = (data & 0xFFFFFFFF).to_bytes(4, "little")
+        self.memory[addr:addr + size] = data_bytes[:size]
 class ControlUnit:
     program_counter = None
 
@@ -76,7 +85,7 @@ class ControlUnit:
         if self.state == State.STOP or self.state == State.FAULT:
             raise StopIteration()
         if self.state == State.FETCH:
-            instr = self.data_path.memory[self.program_counter:self.program_counter + 4]
+            instr = self.data_path.read_bytes(4,self.program_counter)
             self.program_counter += 4
             self.IR = instr
             self.next_state()
@@ -92,7 +101,7 @@ class ControlUnit:
         if opcode is Opcode.PUSHI:
             if self.state == State.T1:
                 arg = instr["arg"]
-                self.data_path.memory[self.data_path.sp:self.data_path.sp+4] = arg.to_bytes(4, byteorder="little", signed=True)
+                self.data_path.write(4,self.data_path.sp,arg)
                 self.data_path.sp += 4
                 self.state = State.FETCH
                 self.tick()
@@ -113,7 +122,7 @@ class ControlUnit:
             if self.state == State.T1:
                 arg = instr["arg"]
                 off = self.data_path.sp + arg
-                self.data_path.memory[self.data_path.sp:self.data_path.sp+4] = off.to_bytes(4, byteorder="little", signed=False)
+                self.data_path.write(4, self.data_path.sp, off)
                 self.data_path.sp += 4
                 self.state = State.FETCH
                 self.tick()
@@ -123,54 +132,51 @@ class ControlUnit:
 
         if opcode is Opcode.LDW:
             if self.state == State.T1:
-                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
-                                                  byteorder="little", signed=False)
+                self.data_path.a = self.data_path.read(4,self.data_path.sp-4)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T2:
-                self.data_path.t = self.data_path.memory[self.data_path.a:self.data_path.a+4]
+                self.data_path.t = self.data_path.read(4,self.data_path.a)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T3:
-                self.data_path.memory[self.data_path.sp-4:self.data_path.sp] = self.data_path.t
+                self.data_path.write(4, self.data_path.sp-4, self.data_path.t)
                 self.next_state()
                 self.tick()
                 return
 
         if opcode is Opcode.LDB:
             if self.state == State.T1:
-                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
-                                                  byteorder="little", signed=False)
+                self.data_path.a = self.data_path.read(4,self.data_path.sp-4)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T2:
-                self.data_path.t = self.data_path.memory[self.data_path.a]
+                self.data_path.t = self.data_path.read(1,self.data_path.a)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T3:
-                self.data_path.memory[self.data_path.sp - 4:self.data_path.sp] = self.data_path.t.to_bytes(4, "little")
+                self.data_path.write(4, self.data_path.sp-4, self.data_path.t)
                 self.next_state()
                 self.tick()
                 return
 
         if opcode is Opcode.STW:
             if self.state == State.T1:
-                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
-                                                  byteorder="little", signed=False)
+                self.data_path.a = self.data_path.read(4,self.data_path.sp-4)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T2:
-                self.data_path.t = self.data_path.memory[self.data_path.sp - 8:self.data_path.sp-4]
+                self.data_path.t = self.data_path.read(4,self.data_path.sp-8)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T3:
-                self.data_path.memory[self.data_path.a:self.data_path.a+4] = self.data_path.t
+                self.data_path.write(4, self.data_path.a, self.data_path.t)
                 self.data_path.sp -= 4
                 self.next_state()
                 self.tick()
@@ -178,18 +184,17 @@ class ControlUnit:
 
         if opcode is Opcode.STB:
             if self.state == State.T1:
-                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
-                                                  byteorder="little", signed=False)
+                self.data_path.a = self.data_path.read(4, self.data_path.sp - 4)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T2:
-                self.data_path.t = self.data_path.memory[self.data_path.sp-8]
+                self.data_path.t = self.data_path.read(4, self.data_path.sp - 8)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T3:
-                self.data_path.memory[self.data_path.a] = self.data_path.t
+                self.data_path.write(1, self.data_path.a, self.data_path.t)
                 self.data_path.sp -= 4
                 self.next_state()
                 self.tick()
@@ -197,137 +202,146 @@ class ControlUnit:
 
         if opcode is Opcode.ADD:
             if self.state == State.T1:
-                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp-4:self.data_path.sp], byteorder="little", signed=True)
+                self.data_path.b = self.data_path.read(4, self.data_path.sp-4, True)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T2:
-                self.data_path.a =int.from_bytes(self.data_path.memory[self.data_path.sp-8:self.data_path.sp-4], byteorder="little", signed=True)
+                self.data_path.a = self.data_path.read(4, self.data_path.sp - 8, True)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T3:
                 self.data_path.sp-=4
-                self.data_path.memory[self.data_path.sp-4:self.data_path.sp] = ((self.data_path.a + self.data_path.b) & 0xFFFFFFFF).to_bytes(4, "little")
+                self.data_path.write(4, self.data_path.sp-4, (self.data_path.a + self.data_path.b))
                 self.next_state()
                 self.tick()
                 return
 
         if opcode is Opcode.SUB:
             if self.state == State.T1:
-                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp-4:self.data_path.sp], byteorder="little", signed=True)
+                self.data_path.b = self.data_path.read(4, self.data_path.sp-4, True)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T2:
-                self.data_path.a =int.from_bytes(self.data_path.memory[self.data_path.sp-8:self.data_path.sp-4], byteorder="little", signed=True)
+                self.data_path.a = self.data_path.read(4, self.data_path.sp - 8, True)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T3:
                 self.data_path.sp-=4
-                self.data_path.memory[self.data_path.sp-4:self.data_path.sp] = ((self.data_path.a - self.data_path.b) & 0xFFFFFFFF).to_bytes(4, "little")
+                self.data_path.write(4, self.data_path.sp - 4, (self.data_path.a - self.data_path.b))
                 self.next_state()
                 self.tick()
                 return
 
         if opcode is Opcode.MUL:
             if self.state == State.T1:
-                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
-                                                  byteorder="little", signed=True)
+                self.data_path.b = self.data_path.read(4, self.data_path.sp-4, True)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T2:
-                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 8:self.data_path.sp - 4],
-                                                  byteorder="little", signed=True)
+                self.data_path.a = self.data_path.read(4, self.data_path.sp - 8, True)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T3:
                 self.data_path.sp-=4
-                self.data_path.memory[self.data_path.sp-4:self.data_path.sp] = ((self.data_path.a * self.data_path.b) & 0xFFFFFFFF).to_bytes(4, "little")
+                self.data_path.write(4, self.data_path.sp - 4, (self.data_path.a * self.data_path.b))
                 self.next_state()
                 self.tick()
                 return
 
         if opcode is Opcode.DIV:
             if self.state == State.T1:
-                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
-                                                  byteorder="little", signed=True)
+                self.data_path.b = self.data_path.read(4, self.data_path.sp-4, True)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T2:
-                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 8:self.data_path.sp - 4],
-                                                  byteorder="little", signed=True)
+                self.data_path.a = self.data_path.read(4, self.data_path.sp - 8, True)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T3:
                 self.data_path.sp-=4
                 result = int(self.data_path.a / self.data_path.b) if self.data_path.b != 0 else 0
-                self.data_path.memory[self.data_path.sp - 4:self.data_path.sp] = (result & 0xFFFFFFFF).to_bytes(4, "little")
+                self.data_path.write(4, self.data_path.sp-4, result)
+                self.next_state()
+                self.tick()
+                return
+
+        if opcode is Opcode.MOD:
+            if self.state == State.T1:
+                self.data_path.b = self.data_path.read(4, self.data_path.sp-4, True)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T2:
+                self.data_path.a = self.data_path.read(4, self.data_path.sp - 8, True)
+                self.next_state()
+                self.tick()
+                return
+            if self.state == State.T3:
+                self.data_path.sp-=4
+                result = self.data_path.a % self.data_path.b if self.data_path.b != 0 else 0
+                self.data_path.write(4, self.data_path.sp-4, result)
                 self.next_state()
                 self.tick()
                 return
 
         if opcode is Opcode.EQ:
             if self.state == State.T1:
-                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
-                                                  byteorder="little", signed=True)
+                self.data_path.b = self.data_path.read(4, self.data_path.sp-4, True)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T2:
-                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 8:self.data_path.sp - 4],
-                                                  byteorder="little", signed=True)
+                self.data_path.a = self.data_path.read(4, self.data_path.sp - 8, True)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T3:
                 self.data_path.sp-=4
-                self.data_path.memory[self.data_path.sp - 4:self.data_path.sp] = (self.data_path.a == self.data_path.b).to_bytes(4, "little")
+                self.data_path.write(4, self.data_path.sp - 4, (self.data_path.a == self.data_path.b))
                 self.next_state()
                 self.tick()
                 return
 
         if opcode is Opcode.SLT:
             if self.state == State.T1:
-                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
-                                                  byteorder="little", signed=True)
+                self.data_path.b = self.data_path.read(4, self.data_path.sp-4, True)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T2:
-                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 8:self.data_path.sp - 4],
-                                                  byteorder="little", signed=True)
+                self.data_path.a = self.data_path.read(4, self.data_path.sp - 8, True)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T3:
                 self.data_path.sp-=4
-                self.data_path.memory[self.data_path.sp - 4:self.data_path.sp] = (self.data_path.a < self.data_path.b).to_bytes(4, "little")
+                self.data_path.write(4, self.data_path.sp - 4, (self.data_path.a < self.data_path.b))
                 self.next_state()
                 self.tick()
                 return
 
         if opcode is Opcode.ULT:
             if self.state == State.T1:
-                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
-                                                  byteorder="little", signed=False)
+                self.data_path.b = self.data_path.read(4, self.data_path.sp-4, False)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T2:
-                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 8:self.data_path.sp - 4],
-                                                  byteorder="little", signed=False)
+                self.data_path.a = self.data_path.read(4, self.data_path.sp - 8, False)
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T3:
                 self.data_path.sp-=4
-                self.data_path.memory[self.data_path.sp - 4:self.data_path.sp] = (self.data_path.a < self.data_path.b).to_bytes(4, "little")
+                self.data_path.write(4, self.data_path.sp - 4, (self.data_path.a < self.data_path.b))
                 self.next_state()
                 self.tick()
                 return
@@ -342,7 +356,7 @@ class ControlUnit:
 
         if opcode is Opcode.JZ:
             if self.state == State.T1:
-                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp], byteorder="little", signed=False)
+                self.data_path.a = self.data_path.read(4, self.data_path.sp - 4)
                 self.data_path.sp -= 4
                 self.next_state()
                 self.tick()
@@ -358,7 +372,7 @@ class ControlUnit:
         if opcode is Opcode.CALL:
             if self.state == State.T1:
                 arg = instr["arg"]
-                self.data_path.memory[self.data_path.sp:self.data_path.sp+4] = self.program_counter.to_bytes(4, "little")
+                self.data_path.write(4, self.data_path.sp, self.program_counter)
                 self.data_path.sp += 4
                 self.program_counter = arg
                 self.state = State.FETCH
@@ -367,20 +381,20 @@ class ControlUnit:
 
         if opcode is Opcode.RET:
             if self.state == State.T1:
-                self.data_path.t = self.data_path.memory[self.data_path.sp-4:self.data_path.sp]
+                self.data_path.t = self.data_path.read(4, self.data_path.sp - 4)
                 self.data_path.sp -= 4
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T2:
-                self.data_path.b = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp], byteorder="little", signed=False)
+                self.data_path.b = self.data_path.read(4, self.data_path.sp - 4)
                 arg = instr["arg"]
                 self.data_path.sp += arg
                 self.next_state()
                 self.tick()
                 return
             if self.state == State.T3:
-                self.data_path.memory[self.data_path.sp-4:self.data_path.sp] = self.data_path.t
+                self.data_path.write(4, self.data_path.sp - 4, self.data_path.t)
                 self.program_counter = self.data_path.b
                 self.next_state()
                 self.tick()
@@ -395,7 +409,7 @@ class ControlUnit:
                 self.tick()
                 return
             if self.state == State.T2:
-                self.data_path.memory[self.data_path.sp:self.data_path.sp+4] = self.data_path.t.to_bytes(4, "little")
+                self.data_path.write(4, self.data_path.sp, self.data_path.t)
                 self.data_path.sp += 4
                 self.state = State.FETCH
                 self.tick()
@@ -403,8 +417,7 @@ class ControlUnit:
 
         if opcode is Opcode.OUT:
             if self.state == State.T1:
-                self.data_path.a = int.from_bytes(self.data_path.memory[self.data_path.sp - 4:self.data_path.sp],
-                                                  byteorder="little", signed=False)
+                self.data_path.a = self.data_path.read(4, self.data_path.sp - 4)
                 self.next_state()
                 self.tick()
                 return
