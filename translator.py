@@ -25,32 +25,6 @@ def symbol2opcode(symbol):
         ".": Opcode.PRINT,
     }.get(symbol)
 
-
-def text2terms(text):
-    """Трансляция текста в последовательность операторов языка (токенов).
-
-    Включает в себя:
-
-    - отсеивание всех незначимых символов (считаются комментариями);
-    - проверка формальной корректности программы (парность оператора цикла).
-    """
-    terms = []
-    for line_num, line in enumerate(text.split(), 1):
-        for pos, char in enumerate(line, 1):
-            if char in symbols():
-                terms.append(Term(line_num, pos, char))
-
-    deep = 0
-    for term in terms:
-        if term.symbol == "[":
-            deep += 1
-        if term.symbol == "]":
-            deep -= 1
-        assert deep >= 0, "Unbalanced brackets!"
-    assert deep == 0, "Unbalanced brackets!"
-
-    return terms
-
 def text2terms(text):
     terms = []
     for line_num, line in enumerate(text.split("\n"), 1):
@@ -99,25 +73,51 @@ def parse_expression(terms, index):
         return (terms[index].symbol, index+1)
 
 def translate(text):
-    expression, _ = parse_expression(text2terms(text), 0)
-    # Транслируем термы в машинный код.
     code = []
-    operands = {"+": Opcode.ADD, "-": Opcode.SUB, "*": Opcode.MUL, "div": Opcode.DIV, "mod": Opcode.MOD, "=":Opcode.EQ}
+    prev_index = -1
+    text = text.split("\n")
+    for item in text:
+        print("item:", item)
+        print(text)
+        expression, index = parse_expression(text2terms(item), 0 if prev_index == -1 else prev_index)
+        operands = {"+": Opcode.ADD, "-": Opcode.SUB, "*": Opcode.MUL, "div": Opcode.DIV, "mod": Opcode.MOD, "=":Opcode.EQ, "<":Opcode.SLT, "u<":Opcode.ULT}
 
-    def emit(expr):
-        if (isinstance(expr, int)):
-            code.append({"opcode": Opcode.PUSHI, "arg": expr})
-            return
-        operator, left, right = expr
-        emit(left)
-        emit(right)
-        if (operator not in operands):
-            raise ValueError("wrong operand!")
-        code.append({"opcode": operands.get(operator)})
-    emit(expression)
+        def emit(expr):
+            if (isinstance(expr, int)):
+                code.append({"opcode": Opcode.PUSHI, "arg": expr})
+                return
+            if not isinstance(expr, list) and not isinstance(expr[0], str):
+                raise ValueError("wrong expression!")
+            operator, *args = expr
+
+            if (operator == "if"):
+                condition, then_br, else_br = args
+                emit(condition)
+                jz_index = len(code)
+                code.append({"opcode": Opcode.JZ, "arg": -1})
+
+                emit(then_br)
+                jmp_index = len(code)
+                code.append({"opcode": Opcode.JMP, "arg": -1})
+
+                code[jz_index] = {"opcode": Opcode.JZ, "arg": 4 + 4*len(code)}
+                emit(else_br)
+                code[jmp_index] = {"opcode": Opcode.JMP, "arg": 4 + 4*len(code)}
+                return
+
+
+            if operator not in operands:
+                raise ValueError("wrong operand!")
+
+            left,right = args
+            emit(left)
+            emit(right)
+            code.append({"opcode": operands.get(operator)})
+        emit(expression)
+        code.append({"opcode": Opcode.DROP})
     code.append({"opcode": Opcode.HALT})
     return code
-
+# print(translate("(+ 10 (if (= (+ 2 3) 5) 7 9))"))
 # print(translate("(div 2 (+ 5 3))"))
 # print(to_bytes(translate("(+ 2 (+ 3 4))")))
 
