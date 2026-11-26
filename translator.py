@@ -72,51 +72,102 @@ def parse_expression(terms, index):
     except ValueError:
         return (terms[index].symbol, index+1)
 
+global halt_addr
 def translate(text):
+    def emit(expr, params=[], h=0):
+        if (isinstance(expr, int)):
+            code.append({"opcode": Opcode.PUSHI, "arg": expr})
+            return
+        if not isinstance(expr, list) and not isinstance(expr[0], str):
+            raise ValueError("wrong expression!")
+
+        if isinstance(expr, str) and expr in params:
+            offset = 4 * (params.index(expr) - len(params) - 1 - h)
+            code.append({"opcode": Opcode.LEA, "arg": offset})
+            code.append({"opcode": Opcode.LDW})
+            return
+        operator, *args = expr
+
+        if (operator in functions):
+            for i, arg in enumerate(args):
+                emit(arg, params, h+i)
+            call_index = len(code)
+            code.append({"opcode": Opcode.CALL, "arg": -1})
+            calls.setdefault(operator, []).append(call_index)
+            return
+        if (operator == "defword"):
+            name, value = args
+            if variables.get(name) != None:
+                raise ValueError("varible already exists!")
+            variables[name] = value
+            return
+        if (operator == "setq"):
+            name, value = args
+            if variables.get(name) == None:
+                raise ValueError("varible is not exists!")
+            variables[name] = value
+            return
+
+        if (operator == "if"):
+            condition, then_br, else_br = args
+            emit(condition, params, h)
+            jz_index = len(code)
+            code.append({"opcode": Opcode.JZ, "arg": -1})
+
+            emit(then_br, params, h)
+            jmp_index = len(code)
+            code.append({"opcode": Opcode.JMP, "arg": -1})
+
+            code[jz_index] = {"opcode": Opcode.JZ, "arg": 4 + 4 * len(code)}
+            emit(else_br, params, h)
+            code[jmp_index] = {"opcode": Opcode.JMP, "arg": 4 + 4 * len(code)}
+            return
+
+        if operator not in operands:
+            raise ValueError("wrong operand!")
+
+        left, right = args
+        emit(left,params,h)
+        emit(right,params,h+1)
+        code.append({"opcode": operands.get(operator)})
+
+    operands = {"+": Opcode.ADD, "-": Opcode.SUB, "*": Opcode.MUL,
+                "div": Opcode.DIV, "mod": Opcode.MOD, "=": Opcode.EQ,
+                "<": Opcode.SLT, "u<": Opcode.ULT}
     code = []
-    prev_index = -1
-    text = text.split("\n")
-    for item in text:
-        print("item:", item)
-        print(text)
-        expression, index = parse_expression(text2terms(item), 0 if prev_index == -1 else prev_index)
-        operands = {"+": Opcode.ADD, "-": Opcode.SUB, "*": Opcode.MUL, "div": Opcode.DIV, "mod": Opcode.MOD, "=":Opcode.EQ, "<":Opcode.SLT, "u<":Opcode.ULT}
+    terms = text2terms(text)
+    forms = []
+    index = 0
+    functions = {}
+    calls = {}
+    variables = {}
+    global halt_addr
+    while index < len(terms):
+        expression, index = parse_expression(terms, index)
+        if (isinstance(expression, list) and expression and expression[0] == "defun"):
+            name, params, *body = expression[1:]
+            functions[name] = {"params": params, "body": body}
+            continue
 
-        def emit(expr):
-            if (isinstance(expr, int)):
-                code.append({"opcode": Opcode.PUSHI, "arg": expr})
-                return
-            if not isinstance(expr, list) and not isinstance(expr[0], str):
-                raise ValueError("wrong expression!")
-            operator, *args = expr
+        forms.append(expression)
 
-            if (operator == "if"):
-                condition, then_br, else_br = args
-                emit(condition)
-                jz_index = len(code)
-                code.append({"opcode": Opcode.JZ, "arg": -1})
-
-                emit(then_br)
-                jmp_index = len(code)
-                code.append({"opcode": Opcode.JMP, "arg": -1})
-
-                code[jz_index] = {"opcode": Opcode.JZ, "arg": 4 + 4*len(code)}
-                emit(else_br)
-                code[jmp_index] = {"opcode": Opcode.JMP, "arg": 4 + 4*len(code)}
-                return
-
-
-            if operator not in operands:
-                raise ValueError("wrong operand!")
-
-            left,right = args
-            emit(left)
-            emit(right)
-            code.append({"opcode": operands.get(operator)})
+    for expression in forms:
         emit(expression)
         code.append({"opcode": Opcode.DROP})
     code.append({"opcode": Opcode.HALT})
+    halt_addr = 0x0004 + 4 * (len(code) - 1)
+
+    for function in functions.values():
+        function["addr"] = 4 + 4 * len(code)
+        for form in function["body"]:
+            emit(form, function["params"])
+        code.append({"opcode": Opcode.RET, "arg": -4*len(function["params"])})
+
+    for name, indices in calls.items():
+        for index in indices:
+            code[index]["arg"] = functions[name]["addr"]
     return code
+
 # print(translate("(+ 10 (if (= (+ 2 3) 5) 7 9))"))
 # print(translate("(div 2 (+ 5 3))"))
 # print(to_bytes(translate("(+ 2 (+ 3 4))")))
@@ -128,7 +179,7 @@ def main(source, target):
         source = f.read()
 
     code = translate(source)
-    halt_addr = 0x0004 + 4 * (len(code) - 1)
+    global halt_addr
     binary_code = halt_addr.to_bytes(4, "little") + to_bytes(code)
     hex_code = to_hex(code)
 
