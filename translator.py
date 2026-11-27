@@ -86,8 +86,11 @@ def translate(text):
             code.append({"opcode": Opcode.LEA, "arg": offset})
             code.append({"opcode": Opcode.LDW})
             return
+        if isinstance(expr, str) and expr in variables:
+            code.append({"opcode": Opcode.PUSHI, "arg": expr})
+            code.append({"opcode": Opcode.LDW})
+            return
         operator, *args = expr
-
         if (operator in functions):
             for i, arg in enumerate(args):
                 emit(arg, params, h+i)
@@ -95,19 +98,15 @@ def translate(text):
             code.append({"opcode": Opcode.CALL, "arg": -1})
             calls.setdefault(operator, []).append(call_index)
             return
-        if (operator == "defword"):
+        if operator == "setq":
             name, value = args
-            if variables.get(name) != None:
-                raise ValueError("varible already exists!")
-            variables[name] = value
-            return
-        if (operator == "setq"):
-            name, value = args
-            if variables.get(name) == None:
-                raise ValueError("varible is not exists!")
-            variables[name] = value
-            return
+            if name not in variables:
+                raise ValueError(f"wrong variable name!")
 
+            emit(value, params, h)
+            code.append({"opcode": Opcode.PUSHI, "arg": name})
+            code.append({"opcode": Opcode.STW})
+            return
         if (operator == "if"):
             condition, then_br, else_br = args
             emit(condition, params, h)
@@ -141,12 +140,20 @@ def translate(text):
     functions = {}
     calls = {}
     variables = {}
+    data = bytearray()
+    addresses = {}
     global halt_addr
     while index < len(terms):
         expression, index = parse_expression(terms, index)
         if (isinstance(expression, list) and expression and expression[0] == "defun"):
             name, params, *body = expression[1:]
             functions[name] = {"params": params, "body": body}
+            continue
+        if (isinstance(expression, list) and expression and expression[0] == "defword"):
+            name, params = expression[1:]
+            if variables.get(name) != None:
+                raise ValueError("varible already exists!")
+            variables[name] = params
             continue
 
         forms.append(expression)
@@ -166,7 +173,17 @@ def translate(text):
     for name, indices in calls.items():
         for index in indices:
             code[index]["arg"] = functions[name]["addr"]
-    return code
+
+    for name, value in variables.items():
+        addresses[name] = 4 + 4 * len(code) + len(data)
+        data.extend(value.to_bytes(4, "little", signed=True))
+
+    for instruction in code:
+        arg = instruction.get("arg")
+        if instruction["opcode"] is Opcode.PUSHI and isinstance(arg, str):
+            instruction["arg"] = addresses[arg]
+
+    return code, bytes(data)
 
 # print(translate("(+ 10 (if (= (+ 2 3) 5) 7 9))"))
 # print(translate("(div 2 (+ 5 3))"))
@@ -178,9 +195,9 @@ def main(source, target):
     with open(source, encoding="utf-8") as f:
         source = f.read()
 
-    code = translate(source)
+    code, data = translate(source)
     global halt_addr
-    binary_code = halt_addr.to_bytes(4, "little") + to_bytes(code)
+    binary_code = halt_addr.to_bytes(4, "little") + to_bytes(code) + data
     hex_code = to_hex(code)
 
     # Убедимся, что каталог назначения существует
