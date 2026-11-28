@@ -14,6 +14,26 @@ def text2terms(text):
         string = ""
         while (index <= len(line) - 1):
             symbol = line[index]
+            if (symbol == '"'):
+                if string:
+                    terms.append(Term(line_num, index - len(string) + 1, string))
+                    string = ""
+
+                start = index
+                index += 1
+
+                while index < len(line) and line[index] != '"':
+                    if line[index] == '\\':
+                        index += 1
+                    index += 1
+
+                if index >= len(line):
+                    raise ValueError("unbalanced brackets!")
+
+                terms.append(Term(line_num, start + 1, line[start:index+1]))
+                index += 1
+                continue
+
             if symbol.isspace():
                 if (string != ""):
                     terms.append(Term(line_num, index - len(string) + 1, string))
@@ -49,15 +69,37 @@ def parse_expression(terms, index):
             raise ValueError("unbalanced brackets!")
 
         return items, index + 1
+    token = terms[index].symbol
+    if token.startswith('"'):
+        text = token[1:-1]
+        escapes = {"n": "\n", "t": "\t", "0": "\0", "\\": "\\", '"': '"'}
+        chars = []
+        i = 0
+
+        while i < len(text):
+            char = text[i]
+            if char == "\\":
+                i += 1
+                if i == len(text) or text[i] not in escapes:
+                    raise ValueError("Неверная escape-последовательность")
+                char = escapes[text[i]]
+
+            chars.append(char)
+            i += 1
+
+        return "".join(chars).encode("ascii"), index + 1
     try:
-        return (int(terms[index].symbol), index+1)
+        return (int(terms[index].symbol), index + 1)
     except ValueError:
-        return (terms[index].symbol, index+1)
+        return (terms[index].symbol, index + 1)
 
 global halt_addr
 def translate(text):
     def emit(expr, params=[], h=0):
         if (isinstance(expr, int)):
+            code.append({"opcode": Opcode.PUSHI, "arg": expr})
+            return
+        if isinstance(expr, bytes):
             code.append({"opcode": Opcode.PUSHI, "arg": expr})
             return
         if not isinstance(expr, list) and not isinstance(expr[0], str):
@@ -214,10 +256,16 @@ def translate(text):
         addresses[name] = 4 + 4 * len(code) + len(data)
         data.extend(bytes(size))
 
+
     for instruction in code:
         arg = instruction.get("arg")
         if instruction["opcode"] is Opcode.PUSHI and isinstance(arg, str):
             instruction["arg"] = addresses[arg]
+        elif instruction["opcode"] is Opcode.PUSHI and isinstance(arg, bytes):
+            data.extend(bytes((-len(data)) % 4))
+            instruction["arg"] = 4 + 4 * len(code) + len(data)
+            data.extend(len(arg).to_bytes(4, "little"))
+            data.extend(arg)
 
     return code, bytes(data)
 
