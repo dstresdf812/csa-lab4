@@ -4,26 +4,8 @@
 
 import os
 import sys
-from operator import index
 
 from isa import Opcode, Term, to_bytes, to_hex, write_json
-
-
-def symbols():
-    """Полное множество символов языка brainfuck."""
-    return {"<", ">", "+", "-", ",", ".", "[", "]"}
-
-
-def symbol2opcode(symbol):
-    """Отображение операторов исходного кода в коды операций."""
-    return {
-        "<": Opcode.LEFT,
-        ">": Opcode.RIGHT,
-        "+": Opcode.INC,
-        "-": Opcode.DEC,
-        ",": Opcode.INPUT,
-        ".": Opcode.PRINT,
-    }.get(symbol)
 
 def text2terms(text):
     terms = []
@@ -90,6 +72,9 @@ def translate(text):
             code.append({"opcode": Opcode.PUSHI, "arg": expr})
             code.append({"opcode": Opcode.LDW})
             return
+        if isinstance(expr, str) and expr in buffers:
+            code.append({"opcode": Opcode.PUSHI, "arg": expr})
+            return
         operator, *args = expr
         if (operator in functions):
             for i, arg in enumerate(args):
@@ -121,7 +106,48 @@ def translate(text):
             emit(else_br, params, h)
             code[jmp_index] = {"opcode": Opcode.JMP, "arg": 4 + 4 * len(code)}
             return
+        if (operator == "while"):
+            start_pc = 4 + 4 * len(code)
+            condition, body = args
+            emit(condition, params, h)
+            jz_index = len(code)
+            code.append({"opcode": Opcode.JZ, "arg": -1})
 
+            emit(body, params, h)
+            code.append({"opcode": Opcode.DROP})
+            code.append({"opcode": Opcode.JMP, "arg": start_pc})
+            code[jz_index] = {"opcode": Opcode.JZ, "arg": 4 + 4 * len(code)}
+            code.append({"opcode": Opcode.PUSHI, "arg": 0})
+            return
+        if operator == "out":
+            if len(args) != 1:
+                raise ValueError("out ожидает один аргумент")
+
+            emit(args[0], params, h)
+            code.append({"opcode": Opcode.OUT})
+            return
+        if operator == "read-byte":
+            addr = args[0]
+            emit(addr, params, h)
+            code.append({"opcode": Opcode.LDB})
+            return
+        if operator == "read-word":
+            addr = args[0]
+            emit(addr, params, h)
+            code.append({"opcode": Opcode.LDW})
+            return
+        if operator == "write-byte":
+            value, addr = args
+            emit(value, params, h)
+            emit(addr, params, h+1)
+            code.append({"opcode": Opcode.STB})
+            return
+        if operator == "write-word":
+            value, addr = args
+            emit(value, params, h)
+            emit(addr, params, h+1)
+            code.append({"opcode": Opcode.STW})
+            return
         if operator not in operands:
             raise ValueError("wrong operand!")
 
@@ -142,6 +168,7 @@ def translate(text):
     variables = {}
     data = bytearray()
     addresses = {}
+    buffers = {}
     global halt_addr
     while index < len(terms):
         expression, index = parse_expression(terms, index)
@@ -154,6 +181,10 @@ def translate(text):
             if variables.get(name) != None:
                 raise ValueError("varible already exists!")
             variables[name] = params
+            continue
+        if isinstance(expression, list) and expression and expression[0] == "defbuf":
+            name, size = expression[1:]
+            buffers[name] = size
             continue
 
         forms.append(expression)
@@ -177,6 +208,11 @@ def translate(text):
     for name, value in variables.items():
         addresses[name] = 4 + 4 * len(code) + len(data)
         data.extend(value.to_bytes(4, "little", signed=True))
+
+    for name, size in buffers.items():
+        data.extend(bytes((-len(data)) % 4))
+        addresses[name] = 4 + 4 * len(code) + len(data)
+        data.extend(bytes(size))
 
     for instruction in code:
         arg = instruction.get("arg")
