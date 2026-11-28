@@ -225,6 +225,7 @@ class ControlUnit:
             if self.state == State.T3:
                 self.data_path.sp-=4
                 self.data_path.write(4, self.data_path.sp-4, (self.data_path.a + self.data_path.b))
+                print(self.data_path.a+self.data_path.b)
                 self.next_state()
                 self.tick()
                 return
@@ -465,13 +466,14 @@ class ControlUnit:
 
     def __repr__(self):
         """Вернуть строковое представление состояния процессора."""
-        state_repr = "TICK: {:3} PC: {:3}/ ADDR: {:3} MEM_OUT: {} SP: {} STATE: {}".format(
+        state_repr = "TICK: {:3} PC: {pc:5}/{pc:#06x} ADDR: {:3} MEM_OUT: {} SP: {} STATE: {:13} INT: {}".format(
             self._tick,
-            self.program_counter,
             self.data_path.data_address,
             self.data_path.memory[self.data_path.data_address],
             self.data_path.sp,
-            self.state
+            self.state,
+            self.is_int,
+            pc = self.program_counter,
         )
 
         if self.IR is None: return state_repr
@@ -516,11 +518,11 @@ def simulation(binary_code, input_tokens, memory_size, limit):
         logging.warning("Input buffer is empty!")
     except StopIteration:
         pass
-
+    output = data_path.output_buffer
     if control_unit._tick >= limit:
         logging.warning("Limit exceeded!")
-    logging.info("output_buffer: %s", repr("".join(data_path.output_buffer)))
-    return "".join(data_path.output_buffer), control_unit.current_tick()
+    logging.info("output_buffer: %s", output)
+    return output, control_unit.current_tick()
 
 
 def main(code_file, input_file):
@@ -543,8 +545,6 @@ def main(code_file, input_file):
         memory_size=0x10000,
         limit=2000,
     )
-
-    print("".join(output))
     print("ticks:", ticks)
 
 if __name__ == "__main__":

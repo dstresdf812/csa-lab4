@@ -14,6 +14,8 @@ def text2terms(text):
         string = ""
         while (index <= len(line) - 1):
             symbol = line[index]
+            if (symbol == ";"):
+                break
             if (symbol == '"'):
                 if string:
                     terms.append(Term(line_num, index - len(string) + 1, string))
@@ -93,7 +95,7 @@ def parse_expression(terms, index):
     except ValueError:
         return (terms[index].symbol, index + 1)
 
-global halt_addr
+global irq_addr
 def translate(text):
     def emit(expr, params=[], h=0):
         if (isinstance(expr, int)):
@@ -216,7 +218,8 @@ def translate(text):
     data = bytearray()
     addresses = {}
     buffers = {}
-    global halt_addr
+    interruption_body = []
+    global irq_addr
     while index < len(terms):
         expression, index = parse_expression(terms, index)
         if (isinstance(expression, list) and expression and expression[0] == "defun"):
@@ -233,6 +236,9 @@ def translate(text):
             name, size = expression[1:]
             buffers[name] = size
             continue
+        if (isinstance(expression, list) and expression and expression[0] == "on-interrupt"):
+            interruption_body = expression[1:]
+            continue
 
         forms.append(expression)
 
@@ -240,13 +246,19 @@ def translate(text):
         emit(expression)
         code.append({"opcode": Opcode.DROP})
     code.append({"opcode": Opcode.HALT})
-    halt_addr = 0x0004 + 4 * (len(code) - 1)
+    irq_addr = 0x0004 + 4 * (len(code) - 1)
 
     for function in functions.values():
         function["addr"] = 4 + 4 * len(code)
         for form in function["body"]:
             emit(form, function["params"])
         code.append({"opcode": Opcode.RET, "arg": -4*len(function["params"])})
+
+    if interruption_body:
+        irq_addr = 4 + 4 * len(code)
+        emit(interruption_body[0])
+        code.append({"opcode": Opcode.DROP})
+        code.append({"opcode": Opcode.IRET})
 
     for name, indices in calls.items():
         for index in indices:
@@ -279,8 +291,8 @@ def main(source, target):
         source = f.read()
 
     code, data = translate(source)
-    global halt_addr
-    binary_code = halt_addr.to_bytes(4, "little") + to_bytes(code) + data
+    global irq_addr
+    binary_code = irq_addr.to_bytes(4, "little") + to_bytes(code) + data
     hex_code = to_hex(code)
 
     # Убедимся, что каталог назначения существует
