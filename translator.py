@@ -168,6 +168,11 @@ def translate(text):
             emit(args[0], params, h)
             code.append({"opcode": Opcode.OUT})
             return
+        if operator == "in":
+            if len(args) != 0:
+                raise ValueError("in не ожидает аругментов")
+            code.append({"opcode": Opcode.IN})
+            return
         if operator == "read-byte":
             addr = args[0]
             emit(addr, params, h)
@@ -256,7 +261,6 @@ def translate(text):
         addresses[name] = 4 + 4 * len(code) + len(data)
         data.extend(bytes(size))
 
-
     for instruction in code:
         arg = instruction.get("arg")
         if instruction["opcode"] is Opcode.PUSHI and isinstance(arg, str):
@@ -268,11 +272,6 @@ def translate(text):
             data.extend(arg)
 
     return code, bytes(data)
-
-# print(translate("(+ 10 (if (= (+ 2 3) 5) 7 9))"))
-# print(translate("(div 2 (+ 5 3))"))
-# print(to_bytes(translate("(+ 2 (+ 3 4))")))
-
 
 def main(source, target):
     """Функция запуска транслятора. Параметры -- исходный и целевой файлы."""
